@@ -8,25 +8,8 @@ load_dotenv(override=True)
 
 MODEL = "gpt-5.4-mini"
 
-DEFAULT_DM_PROMPT = (
-    "Draft my next iMessage to {contact_name}. Match my tone and formality levels from prior messages sent by [Me]. "
-    "Capitalize first word. Avoid emojis in most cases. "
-    "Do not use hyphens, dashes, or periods "
-    "Do not repeat or rephrase what I already said — move the conversation forward "
-    "with new content (answer a question they asked, react to their last message, "
-    "or add a new thought). "
-    "Reply with only the message text — no quotes, no preface."
-)
-
-DEFAULT_GROUP_PROMPT = (
-    "Draft my next iMessage to the group chat '{group_name}'. "
-    "Match my tone and formality from prior messages sent by 'me'. "
-    "Capitalize first word. Avoid emojis in most cases. "
-    "Pay attention to who said what — multiple people are talking. "
-    "Do not repeat or rephrase what I already said — move the conversation forward "
-    "with new content (answer a question someone asked, react to the latest message, "
-    "or add a new thought). "
-    "Reply with only the message text — no quotes, no preface."
+DEFAULT_PROMPT = (
+    "Draft my next iMessage"
 )
 
 
@@ -84,7 +67,7 @@ def suggest_reply(contact_name, history):
 
     transcript = "\n".join(f"{sender.capitalize()}: {text}" for sender, text, _ in history)
 
-    system_prompt = os.environ.get("DM_SYSTEM_PROMPT", DEFAULT_DM_PROMPT).format(
+    system_prompt = os.environ.get("CUSTOM_PROMPT", "DEFAULT_PROMPT").format(
         contact_name=contact_name
     )
     user_prompt = (
@@ -144,7 +127,7 @@ def suggest_group_reply(group_name, history):
 
     transcript = "\n".join(f"{sender}: {text}" for sender, text, _ in history)
 
-    system_prompt = os.environ.get("GROUP_SYSTEM_PROMPT", DEFAULT_GROUP_PROMPT).format(
+    system_prompt = os.environ.get("CUSTOM_PROMPT", DEFAULT_PROMPT).format(
         group_name=group_name
     )
     user_prompt = f"Group conversation transcript (me = me, others labeled by name):\n\n{transcript}"

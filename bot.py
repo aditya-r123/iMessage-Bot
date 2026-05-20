@@ -1,3 +1,5 @@
+#Run with /Users/adityar/.venvs/message_bot/bin/python /Users/adityar/message_bot.py
+
 import queue
 import sqlite3
 import subprocess

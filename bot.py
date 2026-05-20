@@ -52,59 +52,71 @@ def extract_attributed_text(blob):
 
 
 def list_all_contacts():
-    """Return all Contacts entries as a list of dicts:
-    [{'name': str, 'phones': [...], 'emails': [...]}, ...] sorted by name.
+    """Return all Contacts entries by reading AddressBook's SQLite databases directly.
+    No AppleScript, no Contacts.app launch. Requires Full Disk Access (same as chat.db).
 
-    Uses batched AppleScript ('every person') instead of a per-person loop —
-    one Apple Event per attribute is ~50x faster than one per person."""
-    script = '''
-    set output to ""
-    tell application "Contacts"
-        launch
-        set theNames to name of every person
-        set thePhonesList to value of phones of every person
-        set theEmailsList to value of emails of every person
-        repeat with i from 1 to count of theNames
-            set theName to item i of theNames
-            if theName is missing value then set theName to ""
-            if theName is not "" then
-                set output to output & "N:" & (theName as string) & linefeed
-                set thesePhones to item i of thePhonesList
-                if thesePhones is not missing value then
-                    repeat with p in thesePhones
-                        set output to output & "P:" & (p as string) & linefeed
-                    end repeat
-                end if
-                set theseEmails to item i of theEmailsList
-                if theseEmails is not missing value then
-                    repeat with e in theseEmails
-                        set output to output & "E:" & (e as string) & linefeed
-                    end repeat
-                end if
-                set output to output & "---" & linefeed
-            end if
-        end repeat
-    end tell
+    Returns: [{'name': str, 'phones': [...], 'emails': [...]}, ...] sorted by name."""
+    base = Path.home() / "Library" / "Application Support" / "AddressBook"
+    db_paths = []
+    top = base / "AddressBook-v22.abcddb"
+    if top.exists():
+        db_paths.append(top)
+    sources_dir = base / "Sources"
+    if sources_dir.exists():
+        for src in sources_dir.iterdir():
+            db = src / "AddressBook-v22.abcddb"
+            if db.exists():
+                db_paths.append(db)
 
-    -- Hide Contacts so it doesn't get in the user's way.
-    try
-        tell application "System Events" to set visible of application process "Contacts" to false
-    end try
+    contacts, seen = [], set()
+    for db_path in db_paths:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            continue
+        try:
+            records = conn.execute(
+                "SELECT Z_PK, ZFIRSTNAME, ZMIDDLENAME, ZLASTNAME, ZNICKNAME, ZORGANIZATION "
+                "FROM ZABCDRECORD"
+            ).fetchall()
+            phones_by_owner = {}
+            for owner, number in conn.execute(
+                "SELECT ZOWNER, ZFULLNUMBER FROM ZABCDPHONENUMBER "
+                "WHERE ZFULLNUMBER IS NOT NULL"
+            ):
+                phones_by_owner.setdefault(owner, []).append(number)
+            emails_by_owner = {}
+            for owner, addr in conn.execute(
+                "SELECT ZOWNER, ZADDRESS FROM ZABCDEMAILADDRESS "
+                "WHERE ZADDRESS IS NOT NULL"
+            ):
+                emails_by_owner.setdefault(owner, []).append(addr)
+        except sqlite3.Error:
+            conn.close()
+            continue
+        conn.close()
 
-    return output
-    '''
-    result = subprocess.check_output(['osascript', '-e', script]).decode('utf-8')
-    contacts, current = [], None
-    for line in result.splitlines():
-        if line.startswith("N:"):
-            current = {"name": line[2:].strip(), "phones": [], "emails": []}
-        elif line.startswith("P:") and current is not None:
-            current["phones"].append(line[2:].strip())
-        elif line.startswith("E:") and current is not None:
-            current["emails"].append(line[2:].strip())
-        elif line.strip() == "---" and current is not None:
-            contacts.append(current)
-            current = None
+        for pk, first, middle, last, nickname, org in records:
+            parts = [p.strip() for p in (first, middle, last) if p and p.strip()]
+            if parts:
+                name = " ".join(parts)
+            elif nickname and nickname.strip():
+                name = nickname.strip()
+            elif org and org.strip():
+                name = org.strip()
+            else:
+                continue
+
+            phones = phones_by_owner.get(pk, [])
+            emails = emails_by_owner.get(pk, [])
+            # Dedup across sources (e.g. iCloud + local) when the same contact
+            # would appear twice with identical fields.
+            key = (name.lower(), tuple(sorted(phones)), tuple(sorted(emails)))
+            if key in seen:
+                continue
+            seen.add(key)
+            contacts.append({"name": name, "phones": phones, "emails": emails})
+
     contacts.sort(key=lambda c: c["name"].lower())
     return contacts
 

@@ -58,12 +58,12 @@ def list_all_contacts():
     Uses batched AppleScript ('every person') instead of a per-person loop —
     one Apple Event per attribute is ~50x faster than one per person."""
     script = '''
+    set output to ""
     tell application "Contacts"
         launch
         set theNames to name of every person
         set thePhonesList to value of phones of every person
         set theEmailsList to value of emails of every person
-        set output to ""
         repeat with i from 1 to count of theNames
             set theName to item i of theNames
             if theName is missing value then set theName to ""
@@ -84,8 +84,14 @@ def list_all_contacts():
                 set output to output & "---" & linefeed
             end if
         end repeat
-        return output
     end tell
+
+    -- Hide Contacts so it doesn't get in the user's way.
+    try
+        tell application "System Events" to set visible of application process "Contacts" to false
+    end try
+
+    return output
     '''
     result = subprocess.check_output(['osascript', '-e', script]).decode('utf-8')
     contacts, current = [], None

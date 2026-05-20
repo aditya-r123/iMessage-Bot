@@ -201,8 +201,14 @@ def pick_contact_gui(load_contacts_fn):
     pick_btn.pack(side=tk.RIGHT)
     pick_btn.configure(state="disabled")
 
+    def click_pick(event):
+        iid = tree.identify_row(event.y)
+        if iid:
+            tree.selection_set(iid)
+            confirm()
+
     search_var.trace_add("write", refresh)
-    tree.bind("<Double-Button-1>", confirm)
+    tree.bind("<ButtonRelease-1>", click_pick)
     root.bind("<Return>", confirm)
     root.bind("<Escape>", cancel)
 
@@ -433,6 +439,9 @@ def get_recent_messages(identifiers, limit=HISTORY_LIMIT):
     # Find the single most recently active DM chat with this contact.
     # Match across all of the contact's handles (phones + emails) since iMessage
     # may route via any of them.
+    # Rank chats by the most recent *text* message (item_type = 0) — location-share
+    # events (item_type = 4) get broadcast across multiple chats and would
+    # otherwise tie-break us onto a stale chat.
     chat_query = f"""
         SELECT chat.ROWID
         FROM chat
@@ -441,6 +450,7 @@ def get_recent_messages(identifiers, limit=HISTORY_LIMIT):
         JOIN chat_message_join ON chat.ROWID = chat_message_join.chat_id
         JOIN message ON chat_message_join.message_id = message.ROWID
         WHERE chat.style = 45
+          AND message.item_type = 0
           AND ({where_handles})
         GROUP BY chat.ROWID
         ORDER BY MAX(message.date) DESC
@@ -470,7 +480,8 @@ def get_recent_messages(identifiers, limit=HISTORY_LIMIT):
     decoded = []
     for text, attr_body, is_from_me, date in rows:
         body = text if text else extract_attributed_text(attr_body)
-        if not body:
+        # Skip empty bodies and decode-garbage (e.g. just the U+FFFD replacement char).
+        if not body or not body.replace("�", "").strip():
             continue
         decoded.append(("me" if is_from_me else "them", body, apple_ns_to_datetime(date)))
         if len(decoded) >= limit:

@@ -1,7 +1,5 @@
 import subprocess
-
 from openai import OpenAI
-
 MODEL = "gpt-5.4-mini"
 
 

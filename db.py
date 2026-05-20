@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
-HISTORY_LIMIT = 10
+HISTORY_LIMIT = 5
 APPLE_EPOCH_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01 UTC
 
 

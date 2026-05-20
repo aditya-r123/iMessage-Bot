@@ -195,3 +195,123 @@ def get_recent_messages(identifiers, limit=HISTORY_LIMIT):
         if len(decoded) >= limit:
             break
     return list(reversed(decoded))
+
+
+def _build_handle_lookup(contacts):
+    """Map handle ids (last-10-digits for phones, lowercased emails) → contact name."""
+    lookup = {}
+    for c in contacts:
+        for phone in c["phones"]:
+            digits = ''.join(d for d in phone if d.isdigit())
+            last10 = digits[-10:] if len(digits) >= 10 else digits
+            if last10:
+                lookup[last10] = c["name"]
+        for email in c["emails"]:
+            lookup[email.lower()] = c["name"]
+    return lookup
+
+
+def _resolve_handle(handle_id, lookup):
+    if not handle_id:
+        return None
+    if "@" in handle_id:
+        return lookup.get(handle_id.lower(), handle_id)
+    digits = ''.join(d for d in handle_id if d.isdigit())
+    last10 = digits[-10:] if len(digits) >= 10 else digits
+    return lookup.get(last10, handle_id)
+
+
+def list_all_group_chats(contacts=None):
+    """Return all group chats (chat.style = 43) sorted by most recent text activity.
+    contacts: list from list_all_contacts() — used to resolve participant handles to names.
+
+    Returns: [{'name': str, 'guid': str, 'rowid': int, 'participants': [str],
+               'last_active': datetime or None}, ...]"""
+    if not CHAT_DB.exists():
+        raise FileNotFoundError(f"iMessage database not found at {CHAT_DB}")
+    lookup = _build_handle_lookup(contacts or [])
+
+    conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True)
+    rows = conn.execute("""
+        SELECT chat.ROWID, chat.display_name, chat.chat_identifier, chat.guid,
+               (SELECT MAX(message.date) FROM message
+                JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
+                WHERE chat_message_join.chat_id = chat.ROWID
+                  AND message.item_type = 0) AS last_date
+        FROM chat
+        WHERE chat.style = 43
+        ORDER BY last_date DESC
+    """).fetchall()
+
+    handles_by_chat = {}
+    for chat_id, handle_id in conn.execute("""
+        SELECT chat_handle_join.chat_id, handle.id
+        FROM chat_handle_join
+        JOIN handle ON chat_handle_join.handle_id = handle.ROWID
+    """):
+        handles_by_chat.setdefault(chat_id, []).append(handle_id)
+    conn.close()
+
+    groups = []
+    for rowid, display_name, chat_identifier, guid, last_date in rows:
+        if not guid:
+            continue
+        handles = handles_by_chat.get(rowid, [])
+        names = [_resolve_handle(h, lookup) or h for h in handles]
+        if display_name and display_name.strip():
+            name = display_name.strip()
+        elif names:
+            preview = names[:3]
+            extra = f" +{len(names) - 3}" if len(names) > 3 else ""
+            name = ", ".join(preview) + extra
+        else:
+            name = chat_identifier or f"chat#{rowid}"
+        last_active = apple_ns_to_datetime(last_date) if last_date else None
+        groups.append({
+            "name": name,
+            "guid": guid,
+            "rowid": rowid,
+            "participants": names,
+            "last_active": last_active,
+        })
+    return groups
+
+
+def get_recent_group_messages(chat_rowid, contacts=None, limit=HISTORY_LIMIT):
+    """Fetch recent messages from a group chat by its chat.ROWID.
+    Returns list of (sender_name, text, datetime) in chronological order, where
+    sender_name is 'me' for own messages or the resolved contact name
+    (falling back to the raw handle id)."""
+    if not CHAT_DB.exists():
+        raise FileNotFoundError(f"iMessage database not found at {CHAT_DB}")
+    lookup = _build_handle_lookup(contacts or [])
+
+    conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT message.text, message.attributedBody, message.is_from_me,
+               message.date, handle.id
+        FROM message
+        JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
+        LEFT JOIN handle ON message.handle_id = handle.ROWID
+        WHERE chat_message_join.chat_id = ?
+          AND message.item_type = 0
+        ORDER BY message.date DESC
+        LIMIT ?
+    """, (chat_rowid, limit * 3))
+    rows = cursor.fetchall()
+    conn.close()
+
+    decoded = []
+    for text, attr_body, is_from_me, date, handle_id in rows:
+        body = text if text else extract_attributed_text(attr_body)
+        if not body or not body.replace("�", "").strip():
+            continue
+        if is_from_me:
+            sender = "me"
+        else:
+            sender = _resolve_handle(handle_id, lookup) or "them"
+        decoded.append((sender, body, apple_ns_to_datetime(date)))
+        if len(decoded) >= limit:
+            break
+    return list(reversed(decoded))

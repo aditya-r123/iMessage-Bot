@@ -18,40 +18,29 @@ def _apply_macos_theme(root):
     return style
 
 
-def pick_contact_gui(load_contacts_fn):
-    """Modal contact picker. `load_contacts_fn()` is called on a background thread
-    so the window appears immediately. Returns the selected contact dict, or None."""
-    state = {"selected": None, "contacts": []}
-    root = tk.Tk()
-    root.title("Contacts")
-    root.geometry("460x600")
-    root.minsize(380, 420)
-    _apply_macos_theme(root)
+def _build_list_panel(parent, load_fn, on_pick, item_label, item_hint, load_summary):
+    """Reusable search-and-list panel.
+    Calls load_fn() on a background thread, then displays items with a search
+    box. Calls on_pick(item) when the user picks one (Return / double-click / Pick button)."""
+    state = {"items": [], "filtered": []}
 
-    container = ttk.Frame(root, padding=(18, 16, 18, 16))
-    container.pack(fill=tk.BOTH, expand=True)
-
-    title = ttk.Label(container, text="Contacts",
-                      font=("TkDefaultFont", 20, "bold"))
-    title.pack(anchor=tk.W, pady=(0, 2))
-    subtitle = ttk.Label(container, text="Loading contacts…",
-                         foreground="#6e6e73")
+    subtitle = ttk.Label(parent, text="Loading…", foreground="#6e6e73")
     subtitle.pack(anchor=tk.W, pady=(0, 12))
 
     search_var = tk.StringVar()
-    search_entry = ttk.Entry(container, textvariable=search_var,
+    search_entry = ttk.Entry(parent, textvariable=search_var,
                              font=("TkDefaultFont", 14))
     search_entry.pack(fill=tk.X, pady=(0, 12), ipady=4)
     search_entry.configure(state="disabled")
 
-    progress = ttk.Progressbar(container, mode="indeterminate")
+    progress = ttk.Progressbar(parent, mode="indeterminate")
     progress.pack(fill=tk.X, pady=(0, 12))
     progress.start(15)
 
-    btn_row = ttk.Frame(container)
+    btn_row = ttk.Frame(parent)
     btn_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(14, 0))
 
-    tree_frame = ttk.Frame(container)
+    tree_frame = ttk.Frame(parent)
     tree_frame.pack(fill=tk.BOTH, expand=True)
     scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
     tree = ttk.Treeview(
@@ -62,42 +51,35 @@ def pick_contact_gui(load_contacts_fn):
         yscrollcommand=scrollbar.set,
         height=18,
     )
-    tree.column("#0", anchor="w", stretch=True, width=240)
-    tree.column("subtitle", anchor="e", stretch=True, width=170)
+    tree.column("#0", anchor="w", stretch=True, width=300)
+    tree.column("subtitle", anchor="e", stretch=True, width=160)
     scrollbar.config(command=tree.yview)
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
     tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-    filtered = []
-
     def refresh(*_):
         q = search_var.get().lower()
         tree.delete(*tree.get_children())
-        filtered.clear()
-        for c in state["contacts"]:
-            if q in c["name"].lower():
-                hint = c["phones"][0] if c["phones"] else (c["emails"][0] if c["emails"] else "")
-                iid = tree.insert("", tk.END, text=c["name"], values=(hint,))
-                filtered.append((iid, c))
-        if filtered:
-            tree.selection_set(filtered[0][0])
-            tree.focus(filtered[0][0])
+        state["filtered"].clear()
+        for item in state["items"]:
+            label = item_label(item)
+            if q in label.lower():
+                iid = tree.insert("", tk.END, text=label, values=(item_hint(item),))
+                state["filtered"].append((iid, item))
+        if state["filtered"]:
+            tree.selection_set(state["filtered"][0][0])
+            tree.focus(state["filtered"][0][0])
 
     def confirm(event=None):
         sel = tree.selection()
         if not sel:
             return
-        target_iid = sel[0]
-        for iid, c in filtered:
-            if iid == target_iid:
-                state["selected"] = c
-                root.destroy()
+        target = sel[0]
+        for iid, item in state["filtered"]:
+            if iid == target:
+                on_pick(item)
                 return
 
-    def cancel(event=None):
-        root.destroy()
-
-    ttk.Button(btn_row, text="Cancel", command=cancel).pack(side=tk.RIGHT, padx=(8, 0))
     pick_btn = ttk.Button(btn_row, text="Pick", command=confirm)
     pick_btn.pack(side=tk.RIGHT)
     pick_btn.configure(state="disabled")
@@ -110,21 +92,21 @@ def pick_contact_gui(load_contacts_fn):
 
     search_var.trace_add("write", refresh)
     tree.bind("<ButtonRelease-1>", click_pick)
-    root.bind("<Return>", confirm)
-    root.bind("<Escape>", cancel)
+    tree.bind("<Return>", confirm)
+    search_entry.bind("<Return>", confirm)
 
     def focus_list(event):
         tree.focus_set()
-        if not tree.selection() and filtered:
-            tree.selection_set(filtered[0][0])
-            tree.focus(filtered[0][0])
+        if not tree.selection() and state["filtered"]:
+            tree.selection_set(state["filtered"][0][0])
+            tree.focus(state["filtered"][0][0])
     search_entry.bind("<Down>", focus_list)
 
     result_q = queue.Queue()
 
     def worker():
         try:
-            result_q.put(("ok", load_contacts_fn()))
+            result_q.put(("ok", load_fn()))
         except Exception as exc:  # noqa: BLE001 — surface anything to the UI
             result_q.put(("err", exc))
 
@@ -134,21 +116,75 @@ def pick_contact_gui(load_contacts_fn):
         try:
             status, payload = result_q.get_nowait()
         except queue.Empty:
-            root.after(80, poll)
+            parent.after(80, poll)
             return
         progress.stop()
         progress.pack_forget()
         if status == "err":
-            subtitle.configure(text=f"Failed to load contacts: {payload}")
+            subtitle.configure(text=f"Failed to load: {payload}")
             return
-        state["contacts"] = payload
-        subtitle.configure(text=f"{len(payload)} contacts. Pick someone to message.")
+        state["items"] = payload
+        subtitle.configure(text=load_summary(payload))
         search_entry.configure(state="normal")
         pick_btn.configure(state="normal")
         refresh()
-        search_entry.focus_set()
 
-    root.after(80, poll)
+    parent.after(80, poll)
+    return search_entry
+
+
+def pick_target_gui(load_contacts_fn, load_groups_fn):
+    """Landing-page picker with two tabs: DMs and Group Chats.
+    Returns:
+      {'kind': 'dm', 'contact': {...}} when a contact is picked,
+      {'kind': 'group', 'group': {...}} when a group is picked,
+      or None if cancelled."""
+    state = {"selected": None}
+    root = tk.Tk()
+    root.title("iMessage Bot")
+    root.geometry("520x680")
+    root.minsize(420, 480)
+    _apply_macos_theme(root)
+
+    container = ttk.Frame(root, padding=(18, 16, 18, 16))
+    container.pack(fill=tk.BOTH, expand=True)
+
+    notebook = ttk.Notebook(container)
+    notebook.pack(fill=tk.BOTH, expand=True)
+
+    dm_tab = ttk.Frame(notebook, padding=(0, 12, 0, 0))
+    group_tab = ttk.Frame(notebook, padding=(0, 12, 0, 0))
+    notebook.add(dm_tab, text="DMs")
+    notebook.add(group_tab, text="Group Chats")
+
+    def on_dm_pick(contact):
+        state["selected"] = {"kind": "dm", "contact": contact}
+        root.destroy()
+
+    def on_group_pick(group):
+        state["selected"] = {"kind": "group", "group": group}
+        root.destroy()
+
+    dm_search = _build_list_panel(
+        parent=dm_tab,
+        load_fn=load_contacts_fn,
+        on_pick=on_dm_pick,
+        item_label=lambda c: c["name"],
+        item_hint=lambda c: c["phones"][0] if c["phones"] else (c["emails"][0] if c["emails"] else ""),
+        load_summary=lambda items: f"{len(items)} contacts. Pick someone to message.",
+    )
+    _build_list_panel(
+        parent=group_tab,
+        load_fn=load_groups_fn,
+        on_pick=on_group_pick,
+        item_label=lambda g: g["name"],
+        item_hint=lambda g: (g["last_active"].strftime("%Y-%m-%d") if g["last_active"] else ""),
+        load_summary=lambda items: f"{len(items)} group chats. Pick one to reply.",
+    )
+
+    root.bind("<Escape>", lambda _e: root.destroy())
+    # Focus the DM search box once the window is mapped.
+    root.after(120, dm_search.focus_set)
     _bring_to_front(root)
     root.mainloop()
     return state["selected"]

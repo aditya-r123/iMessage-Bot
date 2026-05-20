@@ -113,3 +113,54 @@ def send_imessage(clean_num, message):
         print(f"Sent via SMS to {clean_num}.")
     except subprocess.CalledProcessError as e:
         print(f"Failed to send message to {clean_num}: {e.stderr.decode('utf-8', errors='replace').strip()}")
+
+
+def suggest_group_reply(group_name, history):
+    if not history:
+        raise ValueError("No prior messages found in this group chat.")
+
+    transcript = "\n".join(f"{sender}: {text}" for sender, text, _ in history)
+
+    system_prompt = (
+        f"Draft my next iMessage to the group chat '{group_name}'. "
+        "Match my tone and formality from prior messages sent by 'me'. "
+        "Capitalize first word. Avoid emojis in most cases. "
+        "Pay attention to who said what — multiple people are talking. "
+        "Do not repeat or rephrase what I already said — move the conversation forward "
+        "with new content (answer a question someone asked, react to the latest message, "
+        "or add a new thought). "
+        "Reply with only the message text — no quotes, no preface."
+    )
+    user_prompt = f"Group conversation transcript (me = me, others labeled by name):\n\n{transcript}"
+
+    print("--- Sending to OpenAI ---")
+    print(f"[system]\n{system_prompt}\n")
+    print(f"[user]\n{user_prompt}")
+    print("--- End ---\n")
+
+    client = OpenAI()
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    return response.choices[0].message.content.strip().strip('"').strip("'")
+
+
+def send_imessage_to_chat(chat_guid, message):
+    """Send a message to a group chat by its full GUID (e.g. 'iMessage;+;chat123456789').
+    The service (iMessage vs SMS) is encoded in the GUID, so we don't need to fall back."""
+    escaped = message.replace('\\', '\\\\').replace('"', '\\"')
+    script = f'''
+    tell application "Messages"
+        set targetChat to a reference to chat id "{chat_guid}"
+        send "{escaped}" to targetChat
+    end tell
+    '''
+    try:
+        subprocess.run(['osascript', '-e', script], check=True, capture_output=True)
+        print(f"Sent to group chat {chat_guid}.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to send to group {chat_guid}: {e.stderr.decode('utf-8', errors='replace').strip()}")

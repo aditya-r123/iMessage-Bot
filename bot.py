@@ -182,7 +182,7 @@ def suggest_reply(contact_name, history):
     transcript = "\n".join(f"{sender.capitalize()}: {text}" for sender, text, _ in history)
 
     system_prompt = (
-        f"Draft my next iMessage to {contact_name}. Match my tone from prior messages. "
+        f"Draft my next iMessage to {contact_name}. Match my tone and formality levels from prior messages sent by [Me]. Capitalize first word. Avoid emojis in most cases. "
         "Do not repeat or rephrase what I already said — move the conversation forward "
         "with new content (answer a question they asked, react to their last message, "
         "or add a new thought). "
@@ -209,12 +209,34 @@ def suggest_reply(contact_name, history):
 
 
 def send_imessage(clean_num, message):
-    applescript_command = f'tell application "Messages" to send "{message}" to buddy "{clean_num}"'
+    # Escape for AppleScript string literal: backslashes first, then double quotes.
+    escaped = message.replace('\\', '\\\\').replace('"', '\\"')
+
+    def try_send(service_type):
+        script = f'''
+        tell application "Messages"
+            set targetService to 1st service whose service type = {service_type}
+            set targetBuddy to buddy "{clean_num}" of targetService
+            send "{escaped}" to targetBuddy
+        end tell
+        '''
+        subprocess.run(
+            ['osascript', '-e', script],
+            check=True, capture_output=True,
+        )
+
+    # Try iMessage first (blue), fall back to SMS (green) if the contact isn't on iMessage.
     try:
-        subprocess.run(['osascript', '-e', applescript_command], check=True)
-        print(f"Message sent successfully to {clean_num}!")
+        try_send("iMessage")
+        print(f"Sent via iMessage to {clean_num}.")
+        return
     except subprocess.CalledProcessError:
-        print(f"Failed to send message to {clean_num}.")
+        pass
+    try:
+        try_send("SMS")
+        print(f"Sent via SMS to {clean_num}.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to send message to {clean_num}: {e.stderr.decode('utf-8', errors='replace').strip()}")
 
 
 if __name__ == "__main__":

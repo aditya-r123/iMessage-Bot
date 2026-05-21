@@ -1,4 +1,4 @@
-# iMessage Bot
+# iMessage Bot for MacOS
 
 Drafts a reply to your most recent iMessage DM or group chat using OpenAI, then previews it before sending. Pick a chat from the tabbed picker (DMs / Group Chats), edit the AI draft, hit Send. If the draft has paragraphs separated by blank lines, each is sent as its own iMessage.
 
